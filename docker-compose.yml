@@ -1,0 +1,153 @@
+version: '3.8'
+
+services:
+  # Airflow components
+  airflow-init:
+    image: apache/airflow:2.6.1
+    container_name: airflow-init
+    entrypoint: ["airflow", "db", "init"]
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+    depends_on:
+      - postgres
+
+  airflow-create-user:
+    image: apache/airflow:2.6.1
+    container_name: airflow-create-user
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+    depends_on:
+      - airflow-init
+    entrypoint: ["airflow", "users", "create", "--username", "admin", "--password", "admin", "--firstname", "Admin", "--lastname", "User", "--role", "Admin", "--email", "admin@example.com"]
+
+  airflow-webserver:
+    image: apache/airflow:2.6.1
+    container_name: airflow-webserver
+    restart: always
+    user: "0:0"  # Run as root user (UID 0 and GID 0)
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - OPENWEATHERMAP_API_KEY=your_openweathermap_api# Replace with your correct API ke
+      - AIRVISUAL_API_KEY=your_airvisual_api # New AirVisual API key
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock  # Mount Docker socket
+    command: webserver
+    ports:
+      - "8090:8080"
+    depends_on:
+      - postgres
+      - airflow-init
+      - airflow-create-user
+
+  airflow-scheduler:
+    image: apache/airflow:2.6.1
+    container_name: airflow-scheduler
+    restart: always
+    user: "0:0"  # Run as root user (UID 0 and GID 0)
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - OPENWEATHERMAP_API_KEY=your_openweathermap_api  # Replace with your correct API ke
+      - AIRVISUAL_API_KEY=your_airvisual_api # New AirVisual API key
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - /var/run/docker.sock:/var/run/docker.sock  # Mount Docker socket
+    command: scheduler
+    depends_on:
+      - postgres
+      - airflow-init
+
+  # Database
+  postgres:
+    image: postgres:14
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # Alternatively, ClickHouse for high-performance analytics
+  clickhouse:
+    image: yandex/clickhouse-server:latest
+    container_name: clickhouse
+    restart: always
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native interface for ClickHouse client
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+
+  # Spark Master
+  spark-master:
+    image: bitnami/spark:3.5.0
+    container_name: spark-master
+    restart: always
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "7077:7077"
+      - "8082:8082"  # Spark Master Web UI port
+    volumes:
+      - ./spark-app:/app
+      - ./postgresql-42.7.4.jar:/opt/bitnami/spark/jars/postgresql-42.7.4.jar  # Mount the JDBC driver
+
+  # Spark Worker
+  spark-worker:
+    image: bitnami/spark:3.5.0
+    container_name: spark-worker
+    restart: always
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077  # Link to Spark Master
+      - SPARK_WORKER_MEMORY=2g  # Memory allocation for worker
+      - SPARK_WORKER_CORES=2    # CPU core allocation for worker
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"  # Spark Worker Web UI port
+    volumes:
+      - ./spark-app:/app
+      - ./postgresql-42.7.4.jar:/opt/bitnami/spark/jars/postgresql-42.7.4.jar  # Mount the JDBC driver
+
+  # JupyterLab service
+  jupyter:
+    image: jupyter/datascience-notebook:latest  # Use a JupyterLab image with Data Science tools pre-installed
+    container_name: jupyter
+    restart: always
+    volumes:
+      - ./notebooks:/home/jovyan/work  # Mount local notebooks directory to Jupyter container
+    ports:
+      - "8888:8888"  # Expose JupyterLab on port 8888
+    environment:
+      - JUPYTER_ENABLE_LAB=yes          # Enable JupyterLab interface
+      - JUPYTER_TOKEN=admin   # Set a default token for authentication
+    depends_on:
+      - spark-master  # Ensure JupyterLab starts after Spark master
+      - spark-worker  # Ensure JupyterLab starts after Spark worker
+      - postgres      # Ensure JupyterLab starts after Postgres
+ 
+
+
+volumes:
+  postgres_data:
+    driver: local
+  clickhouse_data:
+    driver: local
